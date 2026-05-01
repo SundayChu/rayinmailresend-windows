@@ -56,3 +56,78 @@ func TestTokenExpiryFormats(t *testing.T) {
 		t.Fatal("past expiry_date token should need refresh")
 	}
 }
+
+func TestResendRecipientsForHeadersExactRoute(t *testing.T) {
+	cfg := &appConfig{values: map[string]string{
+		"resend.to":                          "default@example.com",
+		"resend.route.from.boss@example.com": "boss-target@gmail.com",
+	}}
+
+	recipients, route, err := resendRecipientsForHeaders(cfg, map[string]string{
+		"From": "Boss <boss@example.com>",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if route != "boss@example.com" {
+		t.Fatalf("route = %q, want boss@example.com", route)
+	}
+	if len(recipients) != 1 || recipients[0] != "boss-target@gmail.com" {
+		t.Fatalf("recipients = %#v, want boss-target@gmail.com", recipients)
+	}
+}
+
+func TestResendRecipientsForHeadersDomainRouteAndFallback(t *testing.T) {
+	cfg := &appConfig{values: map[string]string{
+		"resend.to":                        "default@example.com",
+		"resend.route.from.vendor.com":     "vendor-team@gmail.com",
+		"resend.route.from.example.com":    "example-team@gmail.com",
+		"resend.route.from.vip.vendor.com": "vip-vendor@gmail.com",
+	}}
+
+	recipients, route, err := resendRecipientsForHeaders(cfg, map[string]string{
+		"From": "Sales <sales@vip.vendor.com>",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if route != "vip.vendor.com" {
+		t.Fatalf("route = %q, want vip.vendor.com", route)
+	}
+	if len(recipients) != 1 || recipients[0] != "vip-vendor@gmail.com" {
+		t.Fatalf("recipients = %#v, want vip-vendor@gmail.com", recipients)
+	}
+
+	recipients, route, err = resendRecipientsForHeaders(cfg, map[string]string{
+		"From": "other@unknown.test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if route != "default" {
+		t.Fatalf("route = %q, want default", route)
+	}
+	if len(recipients) != 1 || recipients[0] != "default@example.com" {
+		t.Fatalf("recipients = %#v, want default@example.com", recipients)
+	}
+}
+
+func TestRouteMatchesFrom(t *testing.T) {
+	tests := []struct {
+		pattern string
+		from    string
+		want    bool
+	}{
+		{"boss@example.com", "Boss <boss@example.com>", true},
+		{"example.com", "boss@example.com", true},
+		{"@example.com", "boss@example.com", true},
+		{"*@example.com", "boss@example.com", true},
+		{"vendor.com", "boss@example.com", false},
+	}
+
+	for _, tt := range tests {
+		if got := routeMatchesFrom(tt.pattern, tt.from); got != tt.want {
+			t.Fatalf("routeMatchesFrom(%q, %q) = %v, want %v", tt.pattern, tt.from, got, tt.want)
+		}
+	}
+}

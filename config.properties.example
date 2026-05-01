@@ -20,6 +20,7 @@ pop3.timeout.seconds=15
 
 # Resend operation.
 # Leave resend.to empty if you prefer entering it in run.ps1.
+# resend.to is the default fallback when no sender route matches.
 resend.to=java.sunday@gmail.com
 resend.from.name=rayinmailresend
 resend.subject.prefix=[rayinmailresend]
@@ -27,6 +28,14 @@ resend.poll.seconds=60
 resend.state.file=.\state\processed_uidl.json
 resend.max.messages=20
 resend.dry.run=false
+
+# Optional sender-based routing.
+# These rules match the original email From header before forwarding.
+# More specific rules win: full email > @domain > domain > wildcard.
+# Examples:
+# resend.route.from.boss@example.com=manager@gmail.com
+# resend.route.from.vendor.com=purchasing@gmail.com,accounting@gmail.com
+# resend.route.from.@customer.com=sales@gmail.com
 
 # Safety default:
 # On the first real run, current POP3 messages are marked as processed and not resent.

@@ -127,6 +127,24 @@ resend.to=target@example.com
 
 多個收件者用逗號分隔。
 
+如果要依照原始寄件者轉寄到不同 Gmail，加入 `resend.route.from.*` 規則：
+
+```properties
+# 預設收件者：沒有符合任何路由時使用。
+resend.to=default@gmail.com
+
+# 完整 email 比對。
+resend.route.from.boss@example.com=manager@gmail.com
+
+# 網域比對，會符合 user@vendor.com 和 user@sub.vendor.com。
+resend.route.from.vendor.com=purchasing@gmail.com,accounting@gmail.com
+
+# 也可以用 @domain 寫法，只符合該網域。
+resend.route.from.@customer.com=sales@gmail.com
+```
+
+路由優先順序是：完整 email、`@domain`、domain、`*`。沒有符合路由時會回到 `resend.to`。
+
 ## 每天自動啟動
 
 先把 `sunday@rayin.com.tw` 的 POP3 密碼加密保存到目前 Windows 使用者：

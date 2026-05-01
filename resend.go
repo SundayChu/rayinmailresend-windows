@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -49,6 +50,13 @@ type gmailSendResponse struct {
 	Thread  string `json:"threadId"`
 	Error   string `json:"error"`
 	Message string `json:"message"`
+}
+
+type resendRoute struct {
+	Key        string
+	Pattern    string
+	Recipients []string
+	Priority   int
 }
 
 func runResendSystem(parent context.Context, cfg *appConfig, once bool, dryRunFlag bool, pollSecondsFlag int) error {
@@ -92,8 +100,7 @@ func runResendSystem(parent context.Context, cfg *appConfig, once bool, dryRunFl
 }
 
 func processResendCycle(ctx context.Context, cfg *appConfig, dryRun bool) error {
-	recipients, err := resendRecipients(cfg)
-	if err != nil {
+	if err := validateResendDestinationConfig(cfg); err != nil {
 		return err
 	}
 
@@ -148,7 +155,7 @@ func processResendCycle(ctx context.Context, cfg *appConfig, dryRun bool) error 
 		pending = pending[len(pending)-maxMessages:]
 	}
 
-	fmt.Printf("找到新信 %d 封，準備轉寄到 %s。\n", len(pending), strings.Join(recipients, ", "))
+	fmt.Printf("找到新信 %d 封，準備依路由轉寄。\n", len(pending))
 
 	for _, item := range pending {
 		rawMessage, err := client.retr(item.Number)
@@ -156,9 +163,15 @@ func processResendCycle(ctx context.Context, cfg *appConfig, dryRun bool) error 
 			return fmt.Errorf("讀取 POP3 message=%d uid=%s 失敗: %w", item.Number, item.UID, err)
 		}
 
+		headers := parseOriginalHeaders(rawMessage)
+		recipients, routeName, err := resendRecipientsForHeaders(cfg, headers)
+		if err != nil {
+			return fmt.Errorf("選擇轉寄收件者失敗 uid=%s from=%q: %w", item.UID, headers["From"], err)
+		}
+
 		forwarded, subject := buildForwardEmail(cfg, profile.EmailAddress, recipients, rawMessage)
 		if dryRun {
-			fmt.Printf("dry-run: 會轉寄 uid=%s subject=%q bytes=%d\n", item.UID, subject, len(rawMessage))
+			fmt.Printf("dry-run: 會轉寄 uid=%s route=%s to=%s subject=%q bytes=%d\n", item.UID, routeName, strings.Join(recipients, ", "), subject, len(rawMessage))
 			continue
 		}
 
@@ -171,7 +184,7 @@ func processResendCycle(ctx context.Context, cfg *appConfig, dryRun bool) error 
 		if err := saveResendState(statePath, state); err != nil {
 			return err
 		}
-		fmt.Printf("已轉寄 uid=%s gmail_message_id=%s subject=%q\n", item.UID, messageID, subject)
+		fmt.Printf("已轉寄 uid=%s route=%s to=%s gmail_message_id=%s subject=%q\n", item.UID, routeName, strings.Join(recipients, ", "), messageID, subject)
 	}
 
 	return nil
@@ -427,6 +440,169 @@ func resendRecipients(cfg *appConfig) ([]string, error) {
 		return nil, fmt.Errorf("resend.to 收件者格式錯誤: %w", err)
 	}
 	return recipients, nil
+}
+
+func validateResendDestinationConfig(cfg *appConfig) error {
+	if _, err := loadResendRoutes(cfg); err != nil {
+		return err
+	}
+	if len(splitList(firstNonEmpty(cfg.get("resend.to"), os.Getenv("RESEND_TO")))) > 0 {
+		_, err := resendRecipients(cfg)
+		return err
+	}
+	if hasResendRoutes(cfg) {
+		return nil
+	}
+	return errors.New("resend.to 未設定，且沒有 resend.route.from.* 路由規則")
+}
+
+func hasResendRoutes(cfg *appConfig) bool {
+	for key := range cfg.values {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(key)), "resend.route.from.") {
+			return true
+		}
+	}
+	return false
+}
+
+func loadResendRoutes(cfg *appConfig) ([]resendRoute, error) {
+	const prefix = "resend.route.from."
+
+	routes := make([]resendRoute, 0)
+	for key, value := range cfg.values {
+		trimmedKey := strings.TrimSpace(key)
+		lowerKey := strings.ToLower(trimmedKey)
+		if !strings.HasPrefix(lowerKey, prefix) {
+			continue
+		}
+
+		pattern := strings.TrimSpace(trimmedKey[len(prefix):])
+		if pattern == "" {
+			return nil, fmt.Errorf("%s 路由來源不可為空", trimmedKey)
+		}
+
+		recipients := splitList(value)
+		if len(recipients) == 0 {
+			return nil, fmt.Errorf("%s 未設定收件者", trimmedKey)
+		}
+		if _, err := mail.ParseAddressList(strings.Join(recipients, ",")); err != nil {
+			return nil, fmt.Errorf("%s 收件者格式錯誤: %w", trimmedKey, err)
+		}
+
+		routes = append(routes, resendRoute{
+			Key:        trimmedKey,
+			Pattern:    pattern,
+			Recipients: recipients,
+			Priority:   routePriority(pattern),
+		})
+	}
+
+	sort.Slice(routes, func(i, j int) bool {
+		if routes[i].Priority != routes[j].Priority {
+			return routes[i].Priority > routes[j].Priority
+		}
+		if len(routes[i].Pattern) != len(routes[j].Pattern) {
+			return len(routes[i].Pattern) > len(routes[j].Pattern)
+		}
+		return routes[i].Key < routes[j].Key
+	})
+
+	return routes, nil
+}
+
+func resendRecipientsForHeaders(cfg *appConfig, headers map[string]string) ([]string, string, error) {
+	from := headers["From"]
+	routes, err := loadResendRoutes(cfg)
+	if err != nil {
+		return nil, "", err
+	}
+
+	for _, route := range routes {
+		if routeMatchesFrom(route.Pattern, from) {
+			return route.Recipients, route.Pattern, nil
+		}
+	}
+
+	recipients, err := resendRecipients(cfg)
+	if err != nil {
+		return nil, "", err
+	}
+	return recipients, "default", nil
+}
+
+func routePriority(pattern string) int {
+	pattern = strings.ToLower(strings.TrimSpace(pattern))
+	switch {
+	case pattern == "*":
+		return 1
+	case strings.Contains(pattern, "@") && !strings.Contains(pattern, "*") && !strings.HasPrefix(pattern, "@"):
+		return 4
+	case strings.HasPrefix(pattern, "@"):
+		return 3
+	case !strings.Contains(pattern, "@") && strings.Contains(pattern, "."):
+		return 2
+	default:
+		return 1
+	}
+}
+
+func routeMatchesFrom(pattern string, from string) bool {
+	pattern = strings.ToLower(strings.TrimSpace(pattern))
+	if pattern == "" {
+		return false
+	}
+	if pattern == "*" {
+		return true
+	}
+
+	email := extractMailAddress(from)
+	if email == "" {
+		return false
+	}
+	email = strings.ToLower(email)
+	domain := mailDomain(email)
+
+	if strings.HasPrefix(pattern, "*@") {
+		return strings.HasSuffix(email, strings.TrimPrefix(pattern, "*"))
+	}
+	if strings.HasPrefix(pattern, "@") {
+		return strings.HasSuffix(email, pattern)
+	}
+	if strings.Contains(pattern, "@") {
+		return email == pattern
+	}
+	if strings.Contains(pattern, ".") {
+		return domain == pattern || strings.HasSuffix(domain, "."+pattern)
+	}
+
+	return email == pattern
+}
+
+func extractMailAddress(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+
+	address, err := mail.ParseAddress(value)
+	if err == nil {
+		return strings.TrimSpace(address.Address)
+	}
+
+	addresses, err := mail.ParseAddressList(value)
+	if err == nil && len(addresses) > 0 {
+		return strings.TrimSpace(addresses[0].Address)
+	}
+
+	return strings.Trim(value, "<> ")
+}
+
+func mailDomain(email string) string {
+	_, domain, ok := strings.Cut(email, "@")
+	if !ok {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(domain))
 }
 
 func buildForwardEmail(cfg *appConfig, fromEmail string, recipients []string, original []byte) ([]byte, string) {
