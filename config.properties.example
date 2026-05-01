@@ -1,0 +1,34 @@
+# Gmail OAuth JSON files.
+# Relative paths are resolved from this config file's folder.
+gmail.credentials.file=.\gmail_credentials.json
+gmail.token.file=.\gmail_token.json
+gmail.user.id=me
+
+# Scopes used when creating gmail_token.json.
+# Keep gmail.readonly for login/profile checks; keep gmail.send if this token
+# will later be used by a resend workflow.
+gmail.oauth.scopes=https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send
+
+# POP3 login check.
+# Gmail usually requires an app password here, not the regular Google password.
+pop3.host=mail.rayin.com.tw
+pop3.port=110
+pop3.tls.mode=starttls
+pop3.username=sunday@rayin.com.tw
+pop3.password=
+pop3.timeout.seconds=15
+
+# Resend operation.
+# Leave resend.to empty if you prefer entering it in run.ps1.
+resend.to=java.sunday@gmail.com
+resend.from.name=rayinmailresend
+resend.subject.prefix=[rayinmailresend]
+resend.poll.seconds=60
+resend.state.file=.\state\processed_uidl.json
+resend.max.messages=20
+resend.dry.run=false
+
+# Safety default:
+# On the first real run, current POP3 messages are marked as processed and not resent.
+# Set this to false only if you intentionally want to resend existing POP3 messages.
+resend.skip.existing.on.first.run=true

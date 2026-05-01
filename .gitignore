@@ -1,0 +1,13 @@
+rayinmailresend.exe
+*.exe
+dist/
+config.properties
+gmail_credentials.json
+gmail_token.json
+*.token.json
+.env
+secrets/
+state/
+logs/
+*.lock
+*.log
