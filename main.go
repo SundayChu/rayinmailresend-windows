@@ -200,6 +200,8 @@ func loadConfig(path string) (*appConfig, error) {
 			"resend.state.file":                 ".\\state\\processed_uidl.json",
 			"resend.max.messages":               "20",
 			"resend.dry.run":                    "false",
+			"resend.skip.subject.contains":      "UNIPSG(",
+			"resend.skip.from":                  "",
 			"resend.skip.existing.on.first.run": "true",
 		},
 		baseDir: cwd,

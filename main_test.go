@@ -69,11 +69,48 @@ func TestResendRecipientsForHeadersExactRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if route != "boss@example.com" {
-		t.Fatalf("route = %q, want boss@example.com", route)
+	if route != "from:boss@example.com" {
+		t.Fatalf("route = %q, want from:boss@example.com", route)
 	}
 	if len(recipients) != 1 || recipients[0] != "boss-target@gmail.com" {
 		t.Fatalf("recipients = %#v, want boss-target@gmail.com", recipients)
+	}
+}
+
+func TestResendRecipientsForHeadersRecipientRoute(t *testing.T) {
+	cfg := &appConfig{values: map[string]string{
+		"resend.to":                             "default@example.com",
+		"resend.route.to.sunday@rayin.com.tw":   "sunday@gmail.com",
+		"resend.route.to.daniel@rayin.com.tw":   "rain@gmail.com.tw",
+		"resend.route.from.daniel@rayin.com.tw": "sender-route@example.com",
+	}}
+
+	recipients, route, err := resendRecipientsForHeaders(cfg, map[string]string{
+		"From": "Daniel <daniel@rayin.com.tw>",
+		"To":   "Daniel <daniel@rayin.com.tw>",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if route != "to:daniel@rayin.com.tw" {
+		t.Fatalf("route = %q, want to:daniel@rayin.com.tw", route)
+	}
+	if len(recipients) != 1 || recipients[0] != "rain@gmail.com.tw" {
+		t.Fatalf("recipients = %#v, want rain@gmail.com.tw", recipients)
+	}
+
+	recipients, route, err = resendRecipientsForHeaders(cfg, map[string]string{
+		"From": "Someone <someone@example.com>",
+		"Cc":   "Sunday <sunday@rayin.com.tw>",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if route != "to:sunday@rayin.com.tw" {
+		t.Fatalf("route = %q, want to:sunday@rayin.com.tw", route)
+	}
+	if len(recipients) != 1 || recipients[0] != "sunday@gmail.com" {
+		t.Fatalf("recipients = %#v, want sunday@gmail.com", recipients)
 	}
 }
 
@@ -91,8 +128,8 @@ func TestResendRecipientsForHeadersDomainRouteAndFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if route != "vip.vendor.com" {
-		t.Fatalf("route = %q, want vip.vendor.com", route)
+	if route != "from:vip.vendor.com" {
+		t.Fatalf("route = %q, want from:vip.vendor.com", route)
 	}
 	if len(recipients) != 1 || recipients[0] != "vip-vendor@gmail.com" {
 		t.Fatalf("recipients = %#v, want vip-vendor@gmail.com", recipients)
@@ -129,5 +166,22 @@ func TestRouteMatchesFrom(t *testing.T) {
 		if got := routeMatchesFrom(tt.pattern, tt.from); got != tt.want {
 			t.Fatalf("routeMatchesFrom(%q, %q) = %v, want %v", tt.pattern, tt.from, got, tt.want)
 		}
+	}
+}
+
+func TestShouldSkipResendBySubject(t *testing.T) {
+	cfg := &appConfig{values: map[string]string{
+		"resend.skip.subject.contains": "UNIPSG(",
+	}}
+
+	skipped, reason := shouldSkipResend(cfg, map[string]string{
+		"From":    "PSC.620WTS2 <PSC.620WTS2@uni-psg.com>",
+		"Subject": "UNIPSG(10.72.247.14) 2026/05/02 17:00:00",
+	})
+	if !skipped {
+		t.Fatal("expected UNIPSG notification to be skipped")
+	}
+	if reason == "" {
+		t.Fatal("expected skip reason")
 	}
 }

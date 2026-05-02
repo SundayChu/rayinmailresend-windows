@@ -119,6 +119,21 @@ PowerShell 視窗保持開著，程式會每 60 秒檢查一次 POP3，有新信
 .\run-rayin-to-gmail.ps1 -Once -DryRun
 ```
 
+主旨包含 `UNIPSG(` 的監控通知會自動略過，不會轉寄。設定在：
+
+```properties
+resend.skip.subject.contains=UNIPSG(
+```
+
+依原始收件者分流可在 `config.properties` 設定：
+
+```properties
+resend.route.to.sunday@rayin.com.tw=sunday@gmail.com
+resend.route.to.daniel@rayin.com.tw=rain@gmail.com.tw
+```
+
+收件者路由會先看原始信件的 `To` / `Cc`，比寄件者路由優先。
+
 如果要固定轉寄收件者，也可以在 `config.properties` 設定：
 
 ```properties

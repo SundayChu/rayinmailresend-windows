@@ -164,6 +164,20 @@ func processResendCycle(ctx context.Context, cfg *appConfig, dryRun bool) error 
 		}
 
 		headers := parseOriginalHeaders(rawMessage)
+		if skipped, reason := shouldSkipResend(cfg, headers); skipped {
+			if dryRun {
+				fmt.Printf("dry-run: 會略過 uid=%s reason=%s from=%q subject=%q\n", item.UID, reason, headers["From"], headers["Subject"])
+				continue
+			}
+
+			state.ProcessedUIDLs[item.UID] = time.Now().UTC().Format(time.RFC3339)
+			if err := saveResendState(statePath, state); err != nil {
+				return err
+			}
+			fmt.Printf("已略過 uid=%s reason=%s from=%q subject=%q\n", item.UID, reason, headers["From"], headers["Subject"])
+			continue
+		}
+
 		recipients, routeName, err := resendRecipientsForHeaders(cfg, headers)
 		if err != nil {
 			return fmt.Errorf("選擇轉寄收件者失敗 uid=%s from=%q: %w", item.UID, headers["From"], err)
@@ -453,12 +467,13 @@ func validateResendDestinationConfig(cfg *appConfig) error {
 	if hasResendRoutes(cfg) {
 		return nil
 	}
-	return errors.New("resend.to 未設定，且沒有 resend.route.from.* 路由規則")
+	return errors.New("resend.to 未設定，且沒有 resend.route.to.* / resend.route.from.* 路由規則")
 }
 
 func hasResendRoutes(cfg *appConfig) bool {
 	for key := range cfg.values {
-		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(key)), "resend.route.from.") {
+		lowerKey := strings.ToLower(strings.TrimSpace(key))
+		if strings.HasPrefix(lowerKey, "resend.route.to.") || strings.HasPrefix(lowerKey, "resend.route.from.") {
 			return true
 		}
 	}
@@ -466,19 +481,30 @@ func hasResendRoutes(cfg *appConfig) bool {
 }
 
 func loadResendRoutes(cfg *appConfig) ([]resendRoute, error) {
-	const prefix = "resend.route.from."
+	const fromPrefix = "resend.route.from."
+	const toPrefix = "resend.route.to."
 
 	routes := make([]resendRoute, 0)
 	for key, value := range cfg.values {
 		trimmedKey := strings.TrimSpace(key)
 		lowerKey := strings.ToLower(trimmedKey)
-		if !strings.HasPrefix(lowerKey, prefix) {
+
+		routeKind := ""
+		prefixLen := 0
+		switch {
+		case strings.HasPrefix(lowerKey, toPrefix):
+			routeKind = "to"
+			prefixLen = len(toPrefix)
+		case strings.HasPrefix(lowerKey, fromPrefix):
+			routeKind = "from"
+			prefixLen = len(fromPrefix)
+		default:
 			continue
 		}
 
-		pattern := strings.TrimSpace(trimmedKey[len(prefix):])
+		pattern := strings.TrimSpace(trimmedKey[prefixLen:])
 		if pattern == "" {
-			return nil, fmt.Errorf("%s 路由來源不可為空", trimmedKey)
+			return nil, fmt.Errorf("%s 路由條件不可為空", trimmedKey)
 		}
 
 		recipients := splitList(value)
@@ -493,7 +519,7 @@ func loadResendRoutes(cfg *appConfig) ([]resendRoute, error) {
 			Key:        trimmedKey,
 			Pattern:    pattern,
 			Recipients: recipients,
-			Priority:   routePriority(pattern),
+			Priority:   routePriority(pattern, routeKind),
 		})
 	}
 
@@ -511,15 +537,22 @@ func loadResendRoutes(cfg *appConfig) ([]resendRoute, error) {
 }
 
 func resendRecipientsForHeaders(cfg *appConfig, headers map[string]string) ([]string, string, error) {
-	from := headers["From"]
 	routes, err := loadResendRoutes(cfg)
 	if err != nil {
 		return nil, "", err
 	}
 
 	for _, route := range routes {
-		if routeMatchesFrom(route.Pattern, from) {
-			return route.Recipients, route.Pattern, nil
+		routeKind, pattern := splitRouteKey(route.Key)
+		switch routeKind {
+		case "to":
+			if routeMatchesRecipients(pattern, headers["To"], headers["Cc"]) {
+				return route.Recipients, "to:" + pattern, nil
+			}
+		case "from":
+			if routeMatchesFrom(pattern, headers["From"]) {
+				return route.Recipients, "from:" + pattern, nil
+			}
 		}
 	}
 
@@ -530,19 +563,59 @@ func resendRecipientsForHeaders(cfg *appConfig, headers map[string]string) ([]st
 	return recipients, "default", nil
 }
 
-func routePriority(pattern string) int {
+func splitRouteKey(key string) (string, string) {
+	const fromPrefix = "resend.route.from."
+	const toPrefix = "resend.route.to."
+
+	trimmedKey := strings.TrimSpace(key)
+	lowerKey := strings.ToLower(trimmedKey)
+	switch {
+	case strings.HasPrefix(lowerKey, toPrefix):
+		return "to", strings.TrimSpace(trimmedKey[len(toPrefix):])
+	case strings.HasPrefix(lowerKey, fromPrefix):
+		return "from", strings.TrimSpace(trimmedKey[len(fromPrefix):])
+	default:
+		return "", ""
+	}
+}
+
+func shouldSkipResend(cfg *appConfig, headers map[string]string) (bool, string) {
+	subject := strings.ToLower(headers["Subject"])
+	for _, needle := range splitList(cfg.get("resend.skip.subject.contains")) {
+		needle = strings.ToLower(strings.TrimSpace(needle))
+		if needle != "" && strings.Contains(subject, needle) {
+			return true, "subject contains " + needle
+		}
+	}
+
+	from := headers["From"]
+	for _, pattern := range splitList(cfg.get("resend.skip.from")) {
+		if routeMatchesFrom(pattern, from) {
+			return true, "from matches " + strings.TrimSpace(pattern)
+		}
+	}
+
+	return false, ""
+}
+
+func routePriority(pattern string, routeKind string) int {
 	pattern = strings.ToLower(strings.TrimSpace(pattern))
+	base := 0
+	if routeKind == "to" {
+		base = 10
+	}
+
 	switch {
 	case pattern == "*":
-		return 1
+		return base + 1
 	case strings.Contains(pattern, "@") && !strings.Contains(pattern, "*") && !strings.HasPrefix(pattern, "@"):
-		return 4
+		return base + 4
 	case strings.HasPrefix(pattern, "@"):
-		return 3
+		return base + 3
 	case !strings.Contains(pattern, "@") && strings.Contains(pattern, "."):
-		return 2
+		return base + 2
 	default:
-		return 1
+		return base + 1
 	}
 }
 
@@ -578,6 +651,46 @@ func routeMatchesFrom(pattern string, from string) bool {
 	return email == pattern
 }
 
+func routeMatchesRecipients(pattern string, headerValues ...string) bool {
+	pattern = strings.ToLower(strings.TrimSpace(pattern))
+	if pattern == "" {
+		return false
+	}
+	if pattern == "*" {
+		return true
+	}
+
+	for _, headerValue := range headerValues {
+		for _, email := range extractMailAddresses(headerValue) {
+			email = strings.ToLower(email)
+			domain := mailDomain(email)
+
+			switch {
+			case strings.HasPrefix(pattern, "*@"):
+				if strings.HasSuffix(email, strings.TrimPrefix(pattern, "*")) {
+					return true
+				}
+			case strings.HasPrefix(pattern, "@"):
+				if strings.HasSuffix(email, pattern) {
+					return true
+				}
+			case strings.Contains(pattern, "@"):
+				if email == pattern {
+					return true
+				}
+			case strings.Contains(pattern, "."):
+				if domain == pattern || strings.HasSuffix(domain, "."+pattern) {
+					return true
+				}
+			case email == pattern:
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
 func extractMailAddress(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -595,6 +708,29 @@ func extractMailAddress(value string) string {
 	}
 
 	return strings.Trim(value, "<> ")
+}
+
+func extractMailAddresses(value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+
+	addresses, err := mail.ParseAddressList(value)
+	if err != nil {
+		if email := extractMailAddress(value); email != "" {
+			return []string{email}
+		}
+		return nil
+	}
+
+	result := make([]string, 0, len(addresses))
+	for _, address := range addresses {
+		if strings.TrimSpace(address.Address) != "" {
+			result = append(result, strings.TrimSpace(address.Address))
+		}
+	}
+	return result
 }
 
 func mailDomain(email string) string {
@@ -649,6 +785,7 @@ func parseOriginalHeaders(original []byte) map[string]string {
 	result := map[string]string{
 		"From":    "",
 		"To":      "",
+		"Cc":      "",
 		"Date":    "",
 		"Subject": "",
 	}

@@ -29,6 +29,16 @@ resend.state.file=.\state\processed_uidl.json
 resend.max.messages=20
 resend.dry.run=false
 
+# Skip monitoring/notification messages. Multiple values can be separated by comma.
+resend.skip.subject.contains=UNIPSG(
+resend.skip.from=
+
+# Optional recipient-based routing.
+# These rules match the original email To/Cc header before forwarding.
+# Recipient routes win before sender routes.
+resend.route.to.sunday@rayin.com.tw=sunday@gmail.com
+resend.route.to.daniel@rayin.com.tw=rain@gmail.com.tw
+
 # Optional sender-based routing.
 # These rules match the original email From header before forwarding.
 # More specific rules win: full email > @domain > domain > wildcard.
